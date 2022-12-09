@@ -1,4 +1,5 @@
 #![feature(try_blocks)]
+#![feature(get_many_mut)]
 
 use std::{
     collections::HashSet,
@@ -57,54 +58,58 @@ impl Move {
         }
     }
 
-    fn apply(&self, h: (i32, i32), t: (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    fn apply(&self, rope: &Vec<(i32, i32)>) -> Vec<(i32, i32)> {
         if self.len() == 1 {
-            let mut t_new = t;
-            let h_new = match self {
-                &Move::Left(l) => (h.0 - l, h.1),
-                &Move::Right(l) => (h.0 + l, h.1),
-                &Move::Up(l) => (h.0, h.1 + l),
-                &Move::Down(l) => (h.0, h.1 - l),
+            let mut rope_new = rope.clone();
+            let head = rope_new.get_mut(0).unwrap();
+            *head = match self {
+                &Move::Left(l) => (head.0 - l, head.1),
+                &Move::Right(l) => (head.0 + l, head.1),
+                &Move::Up(l) => (head.0, head.1 + l),
+                &Move::Down(l) => (head.0, head.1 - l),
             };
-            let dist_x = h_new.0 - t.0;
-            let dist_y = h_new.1 - t.1;
 
-            if dist_x.abs() > 1 {
-                t_new.0 += dist_x.signum();
-                if dist_y.abs() == 1 {
-                    t_new.1 += dist_y.signum();
+            for i in 0..rope.len()-1 {
+                let [h, t] = rope_new.get_many_mut([i, i+1]).unwrap();
+
+                let dist_x = h.0 - t.0;
+                let dist_y = h.1 - t.1;
+
+                if dist_x.abs() > 1 {
+                    t.0 += dist_x.signum();
+                    if dist_y.abs() == 1 {
+                        t.1 += dist_y.signum();
+                    }
+                }
+                if dist_y.abs() > 1 {
+                    t.1 += dist_y.signum();
+                    if dist_x.abs() == 1 {
+                        t.0 += dist_x.signum();
+                    }
                 }
             }
-            if dist_y.abs() > 1 {
-                t_new.1 += dist_y.signum();
-                if dist_x.abs() == 1 {
-                    t_new.0 += dist_y.signum();
-                }
-            }
 
-            (h_new, t_new)
+            rope_new
         } else {
             panic!("Cannot apply more than one move")
         }
     }
 }
 
-pub fn count_unique_tail_positions(input: impl Iterator<Item = String>) -> Result<usize> {
+pub fn count_unique_tail_positions(input: impl Iterator<Item = String>, rope_len: usize) -> Result<usize> {
     let t_pos = input
         .flat_map(|l| {
             let mv = l.parse::<Move>().unwrap();
             let len = mv.len();
             repeat(mv.with(1)).take(len as usize)
         })
-        .scan(((0, 0), (0, 0)), |(h, t), l| {
-            (*h, *t) = l.apply(*h, *t);
-            Some((*h, *t))
+        .scan(vec!((0, 0); rope_len), |rope, l| {
+            *rope = l.apply(&*rope);
+            Some(rope.clone())
         })
-        .map(|(_, t)| t)
+        .map(|rope| rope.last().copied().unwrap())
         .chain(iter::once((0, 0)))
-        .collect::<Vec<_>>();
-
-    println!("{t_pos:#?}");
+        .collect::<HashSet<_>>();
 
     Ok(t_pos.len())
 }
@@ -114,11 +119,19 @@ mod tests {
     use super::*;
 
     const TEST_INPUT: &str = include_str!("../data/test_input");
+    const TEST_INPUT_2: &str = include_str!("../data/test_input_2");
 
     #[test]
     fn part1() {
-        let res = count_unique_tail_positions(TEST_INPUT.lines().map(|l| l.to_string()));
+        let res = count_unique_tail_positions(TEST_INPUT.lines().map(|l| l.to_string()), 2);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 13);
+    }
+
+    #[test]
+    fn part2() {
+        let res = count_unique_tail_positions(TEST_INPUT_2.lines().map(|l| l.to_string()), 10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 36);
     }
 }
