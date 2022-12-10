@@ -69,8 +69,8 @@ impl Move {
                 &Move::Down(l) => (head.0, head.1 - l),
             };
 
-            for i in 0..rope.len()-1 {
-                let [h, t] = rope_new.get_many_mut([i, i+1]).unwrap();
+            for i in 0..rope.len() - 1 {
+                let [h, t] = rope_new.get_many_mut([i, i + 1]).unwrap();
 
                 let dist_x = h.0 - t.0;
                 let dist_y = h.1 - t.1;
@@ -96,14 +96,17 @@ impl Move {
     }
 }
 
-pub fn count_unique_tail_positions(input: impl Iterator<Item = String>, rope_len: usize) -> Result<usize> {
+pub fn count_unique_tail_positions(
+    input: impl Iterator<Item = String>,
+    rope_len: usize,
+) -> Result<usize> {
     let t_pos = input
         .flat_map(|l| {
             let mv = l.parse::<Move>().unwrap();
             let len = mv.len();
             repeat(mv.with(1)).take(len as usize)
         })
-        .scan(vec!((0, 0); rope_len), |rope, l| {
+        .scan(vec![(0, 0); rope_len], |rope, l| {
             *rope = l.apply(&*rope);
             Some(rope.clone())
         })
