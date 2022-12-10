@@ -1,4 +1,4 @@
-use day10::get_crt_output;
+use day10::{get_crt_output, prettify};
 
 use std::io::{self, BufRead};
 
@@ -9,7 +9,7 @@ fn main() -> Result<()> {
 
     let output = get_crt_output(stdin.lock().lines().filter_map(|s| s.ok()), 6, 40);
 
-    println!("{}", output);
+    println!("{}", prettify(output));
 
     Ok(())
 }

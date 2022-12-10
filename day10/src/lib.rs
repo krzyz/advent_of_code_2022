@@ -110,6 +110,11 @@ pub fn get_crt_output(input: impl Iterator<Item = String>, rows: usize, cols: us
         .collect()
 }
 
+// Added after checking answers on reddit :)
+pub fn prettify(output: String) -> String {
+    output.replace("#", "██").replace(".", "░░")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
