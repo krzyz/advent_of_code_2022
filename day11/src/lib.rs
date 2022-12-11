@@ -1,4 +1,8 @@
-use std::str::FromStr;
+use std::{
+    collections::HashMap,
+    ops::{Add, Mul},
+    str::FromStr,
+};
 
 use anyhow::{anyhow, Context, Result};
 use nom::{
@@ -14,7 +18,104 @@ use nom::{
     sequence::{delimited, preceded, terminated, tuple},
     Finish, IResult,
 };
-use num::{integer::div_floor, Integer};
+use num::{
+    integer::{div_floor, div_rem},
+    Integer,
+};
+
+#[derive(Debug, Clone)]
+
+pub enum Item {
+    Number(i32),
+    PrimeRemindersOfNumber(HashMap<i32, i32>),
+}
+
+impl Mul for Item {
+    type Output = Item;
+
+    fn mul(self, rhs: Item) -> Self::Output {
+        match (&self, &rhs) {
+            (
+                &Item::PrimeRemindersOfNumber(ref rem_map_self),
+                &Item::PrimeRemindersOfNumber(ref rem_map_rhs),
+            ) => Item::PrimeRemindersOfNumber(
+                rem_map_self
+                    .into_iter()
+                    .map(|(divisor, rem_self)| {
+                        let rem_rhs = rem_map_rhs.get(&divisor).unwrap();
+                        (*divisor, div_rem(*rem_self * *rem_rhs, *divisor).1)
+                    })
+                    .collect(),
+            ),
+            (_, &Item::Number(i)) => self * i,
+            (&Item::Number(i), _) => rhs * i,
+        }
+    }
+}
+
+impl Mul<i32> for Item {
+    type Output = Item;
+
+    fn mul(self, rhs: i32) -> Self::Output {
+        match self {
+            Item::Number(i) => Item::Number(i * rhs),
+            Item::PrimeRemindersOfNumber(rem_map) => Item::PrimeRemindersOfNumber(
+                rem_map
+                    .into_iter()
+                    .map(|(divisor, rem)| (divisor, div_rem(rem * rhs, divisor).1))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl Add<i32> for Item {
+    type Output = Item;
+
+    fn add(self, rhs: i32) -> Self::Output {
+        match self {
+            Item::Number(i) => Item::Number(i + rhs),
+            Item::PrimeRemindersOfNumber(rem_map) => Item::PrimeRemindersOfNumber(
+                rem_map
+                    .into_iter()
+                    .map(|(divisor, rem)| (divisor, div_rem(rem + rhs, divisor).1))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl Item {
+    fn to_prime_remainders(self, primes: &[i32]) -> Self {
+        match self {
+            Item::Number(i) => Item::PrimeRemindersOfNumber(
+                primes
+                    .iter()
+                    .map(|prime| (*prime, i.div_rem(prime).1))
+                    .collect(),
+            ),
+            Item::PrimeRemindersOfNumber(_) => self,
+        }
+    }
+
+    fn div_floor(&self, rhs: i32) -> Self {
+        match self {
+            Item::Number(i) => Item::Number(div_floor(*i, rhs)),
+            Item::PrimeRemindersOfNumber(_) => unimplemented!(),
+        }
+    }
+
+    fn is_multiple_of(&self, divisor: i32) -> bool {
+        match self {
+            Item::Number(i) => i.is_multiple_of(&divisor),
+            Item::PrimeRemindersOfNumber(rem_map) => {
+                rem_map.get(&divisor).expect(
+                    format!("Map of prime reminders wasn't initialized for {divisor}").as_str(),
+                ) == &0
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum OpRhs {
@@ -37,7 +138,7 @@ pub struct Test {
 
 #[derive(Debug, Clone)]
 pub struct Monkey {
-    items: Vec<i32>,
+    items: Vec<Item>,
     operation: Operation,
     test: Test,
 }
@@ -112,12 +213,15 @@ fn parse_operation(i: &str) -> IResult<&str, Operation> {
     )(i)
 }
 
-fn parse_starting_items(i: &str) -> IResult<&str, Vec<i32>> {
+fn parse_starting_items(i: &str) -> IResult<&str, Vec<Item>> {
     delimited(
         multispace0,
         preceded(
             tag("Starting items: "),
-            separated_list0(tag(", "), map_res(digit1, FromStr::from_str)),
+            separated_list0(
+                tag(", "),
+                map(map_res(digit1, FromStr::from_str), |i| Item::Number(i)),
+            ),
         ),
         line_ending,
     )(i)
@@ -147,13 +251,13 @@ fn parse_monkey(i: &str) -> IResult<&str, (Monkey, usize)> {
     )(i)
 }
 
-pub fn get_monkey_business(input: &str, rounds: usize) -> Result<i32> {
+pub fn get_monkey_business(input: &str, rounds: usize, manageable: bool) -> Result<i64> {
     let monkeys = all_consuming(terminated(many0(parse_monkey), multispace0))(input)
         .finish()
         .unwrap()
         .1;
 
-    let mut monkeys = monkeys
+    let monkeys = monkeys
         .into_iter()
         .enumerate()
         .map(|(i_enumerate, (monkey, i_parse))| {
@@ -167,6 +271,33 @@ pub fn get_monkey_business(input: &str, rounds: usize) -> Result<i32> {
 
     let mut times_inspected_per_monkey = vec![0; monkeys.len()];
 
+    let mut monkeys = if manageable {
+        monkeys
+    } else {
+        let primes = monkeys
+            .iter()
+            .map(|monkey| monkey.test.divisible_by)
+            .collect::<Vec<_>>();
+
+        monkeys
+            .into_iter()
+            .map(
+                |Monkey {
+                     items,
+                     operation,
+                     test,
+                 }| Monkey {
+                    items: items
+                        .into_iter()
+                        .map(|item| item.to_prime_remainders(primes.as_ref()))
+                        .collect(),
+                    operation,
+                    test,
+                },
+            )
+            .collect::<Vec<_>>()
+    };
+
     for _ in 0..rounds {
         for i in 0..monkeys.len() {
             let mut current_monkey = monkeys.get(i).unwrap().clone();
@@ -177,16 +308,20 @@ pub fn get_monkey_business(input: &str, rounds: usize) -> Result<i32> {
                 let new_worry_lvl = match current_monkey.operation {
                     Operation::Multiply(x) => match x {
                         OpRhs::Int(y) => worry_lvl * y,
-                        OpRhs::Old => worry_lvl * worry_lvl,
+                        OpRhs::Old => worry_lvl.clone() * worry_lvl,
                     },
                     Operation::Add(x) => match x {
                         OpRhs::Int(y) => worry_lvl + y,
-                        OpRhs::Old => 2 * worry_lvl,
+                        OpRhs::Old => worry_lvl * 2,
                     },
                 };
-                let new_worry_lvl = div_floor(new_worry_lvl, 3);
+                let new_worry_lvl = if manageable {
+                    new_worry_lvl.div_floor(3)
+                } else {
+                    new_worry_lvl
+                };
 
-                let throw_to = if new_worry_lvl.is_multiple_of(&current_monkey.test.divisible_by) {
+                let throw_to = if new_worry_lvl.is_multiple_of(current_monkey.test.divisible_by) {
                     current_monkey.test.true_pass_to
                 } else {
                     current_monkey.test.false_pass_to
@@ -218,8 +353,15 @@ mod tests {
 
     #[test]
     fn part1() {
-        let res = get_monkey_business(TEST_INPUT, 20);
+        let res = get_monkey_business(TEST_INPUT, 20, true);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 10605);
+    }
+
+    #[test]
+    fn part2() {
+        let res = get_monkey_business(TEST_INPUT, 10000, false);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 2713310158);
     }
 }

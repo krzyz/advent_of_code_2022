@@ -17,8 +17,8 @@ fn main() -> Result<()> {
             .collect::<std::result::Result<String, _>>()
             .map_err(anyhow::Error::msg)?
             .as_str(),
-        20,
-        true,
+        10000,
+        false,
     );
 
     println!("{}", res.unwrap());
