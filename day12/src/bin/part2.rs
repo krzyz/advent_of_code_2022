@@ -17,7 +17,7 @@ fn main() -> Result<()> {
             .collect::<std::result::Result<String, _>>()
             .map_err(anyhow::Error::msg)?
             .as_str(),
-        false,
+        true,
     );
 
     println!("{}", res.unwrap());

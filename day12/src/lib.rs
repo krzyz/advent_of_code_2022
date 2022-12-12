@@ -5,7 +5,8 @@ use std::{rc::Rc, str::FromStr};
 use anyhow::{anyhow, Context, Result};
 use itertools::{iproduct, Itertools};
 use petgraph::algo::dijkstra;
-use petgraph::prelude::UnGraph;
+use petgraph::graph::NodeIndex;
+use petgraph::prelude::Graph;
 
 #[derive(Debug, Clone)]
 struct Heightmap {
@@ -42,11 +43,11 @@ impl FromStr for Heightmap {
                     .map(|(col, c)| match c {
                         'S' => {
                             start = Some((row, col));
-                            Ok('a' as i32 - 1)
+                            Ok('a' as i32)
                         }
                         'E' => {
                             end = Some((row, col));
-                            Ok('z' as i32 + 1)
+                            Ok('z' as i32)
                         }
                         'a'..='z' => Ok(c as i32),
                         _ => Err(anyhow!(format!("Unrecognized height character: {c}"))),
@@ -72,8 +73,7 @@ impl FromStr for Heightmap {
 
 #[derive(Debug, Clone)]
 struct HeightmapGraph {
-    graph: UnGraph<i32, ()>,
-    start: usize,
+    graph: Graph<i32, ()>,
     end: usize,
 }
 
@@ -83,50 +83,82 @@ impl From<Heightmap> for HeightmapGraph {
         let edges = iproduct!(0..map.rows(), 0..map.cols())
             .flat_map(|(i, j)| {
                 let map = map.clone();
-                iproduct!([-1, 1].into_iter(), [-1, 1].into_iter()).flat_map(move |(dx, dy)| {
-                    let i2 = i as i32 + dx;
-                    let j2 = j as i32 + dy;
-                    if let Some((i2, j2)) = (i2 >= 0 && i2 < map.rows() as i32)
-                        .then(|| i2)
-                        .and_then(|i2| {
-                            (j2 >= 0 && j2 < map.cols() as i32).then(|| (i2 as usize, j2 as usize))
-                        })
-                    {
-                        if (map.heights[i][j] - map.heights[i2][j2]).abs() <= 1 {
-                            Some((map.ind(i, j) as u32, map.ind(i2, j2) as u32))
+                [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .flat_map(move |(dx, dy)| {
+                        let i2 = i as i32 + dx;
+                        let j2 = j as i32 + dy;
+                        if let Some((i2, j2)) = (i2 >= 0 && i2 < map.rows() as i32)
+                            .then(|| i2)
+                            .and_then(|i2| {
+                                (j2 >= 0 && j2 < map.cols() as i32)
+                                    .then(|| (i2 as usize, j2 as usize))
+                            })
+                        {
+                            if map.heights[i2][j2] - map.heights[i][j] <= 1 {
+                                Some((map.ind(i, j) as u32, map.ind(i2, j2) as u32))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
-                    }
-                })
+                    })
             })
             .collect::<Vec<_>>();
 
         Self {
-            graph: UnGraph::from_edges(edges.as_slice()),
-            start: (map.ind(map.start.0, map.start.1)),
+            graph: Graph::from_edges(edges.as_slice()),
             end: (map.ind(map.end.0, map.end.1)),
         }
     }
 }
 
-pub fn get_shortest_path_len(input: &str) -> Result<usize> {
+pub fn get_shortest_path_len(input: &str, all: bool) -> Result<i32> {
     let heightmap = Heightmap::from_str(input)?;
+    let heightmap = Rc::new(heightmap);
 
-    let heightmap_graph = HeightmapGraph::from(heightmap);
+    let starting_nodes = if all {
+        heightmap
+            .heights
+            .iter()
+            .enumerate()
+            .flat_map(|(i, row)| {
+                let heightmap = heightmap.clone();
+                row.iter().enumerate().filter_map(move |(j, val)| {
+                    if *val == ('a' as i32) {
+                        Some((heightmap.ind(i, j) as u32).into())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![(heightmap.ind(heightmap.start.0, heightmap.start.1) as u32).into()]
+    };
 
-    let node_map = dijkstra(
-        &heightmap_graph.graph,
-        (heightmap_graph.start as u32).into(),
-        Some((heightmap_graph.end as u32).into()),
-        |_| 1,
-    );
+    let heightmap_graph = HeightmapGraph::from(Rc::try_unwrap(heightmap).unwrap());
 
-    println!("{node_map:#?}");
+    let mut paths = starting_nodes
+        .into_iter()
+        .filter_map(|starting_node| {
+            let node_map = dijkstra(
+                &heightmap_graph.graph,
+                starting_node,
+                Some((heightmap_graph.end as u32).into()),
+                |_| 1,
+            );
 
-    Ok(0)
+            node_map
+                .get(&NodeIndex::new(heightmap_graph.end as usize))
+                .copied()
+        })
+        .collect::<Vec<_>>();
+
+    paths.sort();
+
+    paths.first().ok_or(anyhow!("No resuls!")).copied()
 }
 
 #[cfg(test)]
@@ -137,8 +169,15 @@ mod tests {
 
     #[test]
     fn part1() {
-        let res = get_shortest_path_len(TEST_INPUT);
+        let res = get_shortest_path_len(TEST_INPUT, false);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 31);
+    }
+
+    #[test]
+    fn part2() {
+        let res = get_shortest_path_len(TEST_INPUT, true);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 29);
     }
 }
