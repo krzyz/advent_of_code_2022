@@ -7,7 +7,6 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use itertools::Itertools;
-use miette::GraphicalReportHandler;
 use nom::{
     branch::alt,
     bytes::complete::tag,
@@ -18,11 +17,7 @@ use nom::{
     sequence::delimited,
     IResult,
 };
-use nom_locate::LocatedSpan;
-use nom_supreme::{
-    error::{BaseErrorKind, ErrorTree, GenericErrorTree},
-    final_parser::final_parser,
-};
+use util::{parse_nice, Span};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum List {
@@ -86,24 +81,9 @@ impl Ord for List {
     }
 }
 
-pub type Span<'a> = LocatedSpan<&'a str>;
-
-#[derive(thiserror::Error, Debug, miette::Diagnostic)]
-#[error("bad input")]
-struct BadInput<'a> {
-    #[source_code]
-    src: &'a str,
-
-    #[label("{kind}")]
-    bad_bit: miette::SourceSpan,
-
-    kind: BaseErrorKind<&'a str, Box<dyn std::error::Error + Send + Sync>>,
-}
-
 fn parse_list<'a, E>(i: Span<'a>) -> IResult<Span<'a>, List, E>
 where
-    E: ParseError<Span<'a>>
-        + nom::error::FromExternalError<nom_locate::LocatedSpan<&'a str>, std::num::ParseIntError>,
+    E: ParseError<Span<'a>> + nom::error::FromExternalError<Span<'a>, std::num::ParseIntError>,
 {
     alt((
         map_res(digit1, |s: Span<'a>| {
@@ -116,34 +96,6 @@ where
     ))(i)
 }
 
-fn parse_line(l: String) -> Option<List> {
-    let line_span = Span::new(l.as_str());
-    let line: Result<_, ErrorTree<Span>> = final_parser(parse_list::<ErrorTree<Span>>)(line_span);
-    match line {
-        Ok(line) => Some(line),
-        Err(e) => {
-            match e {
-                GenericErrorTree::Base { location, kind } => {
-                    let offset = location.location_offset().into();
-                    let err = BadInput {
-                        src: l.as_str(),
-                        bad_bit: miette::SourceSpan::new(offset, 0.into()),
-                        kind,
-                    };
-                    let mut s = String::new();
-                    GraphicalReportHandler::new()
-                        .render_report(&mut s, &err)
-                        .unwrap();
-                    println!("{s}");
-                }
-                GenericErrorTree::Stack { .. } => todo!("stack"),
-                GenericErrorTree::Alt(_) => todo!("alt"),
-            }
-            None
-        }
-    }
-}
-
 pub fn get_pair_list_iter(
     input: impl Iterator<Item = String>,
 ) -> Result<impl Iterator<Item = (List, List)>> {
@@ -152,7 +104,13 @@ pub fn get_pair_list_iter(
         .into_iter()
         .map(|chunk| {
             chunk
-                .filter_map(|l| if !l.is_empty() { parse_line(l) } else { None })
+                .filter_map(|l| {
+                    if !l.is_empty() {
+                        parse_nice(l.as_str(), parse_list)
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<_>>()
         })
         .map(|list_vec| -> Result<(List, List)> {
