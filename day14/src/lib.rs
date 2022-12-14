@@ -129,7 +129,7 @@ impl Cave {
         }
     }
 
-    fn progress(&mut self) -> Progress {
+    fn progress(&mut self, floor: bool) -> Progress {
         let falling = if let Some((x, y)) = &self.moving {
             let down = (*x, y + 1);
             let move_to = if self.get(&down).is_filled() {
@@ -159,7 +159,15 @@ impl Cave {
 
         if let Some(falled_to) = falling {
             if falled_to.1 >= self.bottom {
-                Progress::FallVoid
+                if floor {
+                    if falled_to.1 >= self.bottom + 1 {
+                        Progress::EndFall
+                    } else {
+                        Progress::Falling
+                    }
+                } else {
+                    Progress::FallVoid
+                }
             } else {
                 Progress::Falling
             }
@@ -207,15 +215,17 @@ fn get_lines(input: impl Iterator<Item = String>) -> Result<impl Iterator<Item =
         .into_iter())
 }
 
-pub fn get_num_sand_rest(input: impl Iterator<Item = String>, print: bool) -> Result<usize> {
+pub fn get_num_sand_rest(
+    input: impl Iterator<Item = String>,
+    floor: bool,
+    print: bool,
+) -> Result<usize> {
     let lines = get_lines(input)?.collect::<Vec<_>>();
     let mut cave = Cave::from_lines(lines.as_slice());
     let mut progress = Progress::Falling;
     let mut rested = 0;
-
-    cave.add_sand(&(500, 0))
-        .ok_or(anyhow!("Couldn't add sand!"))?;
-    while progress != Progress::FallVoid {
+    let mut sand_ok = cave.add_sand(&(500, 0));
+    while progress != Progress::FallVoid && sand_ok.is_some() {
         if print {
             let x = format!("{cave}");
             println!(
@@ -234,12 +244,11 @@ pub fn get_num_sand_rest(input: impl Iterator<Item = String>, print: bool) -> Re
 
         match progress {
             Progress::Falling => {
-                progress = cave.progress();
+                progress = cave.progress(floor);
             }
             Progress::EndFall => {
                 rested += 1;
-                cave.add_sand(&(500, 0))
-                    .ok_or(anyhow!("Couldn't add sand!"))?;
+                sand_ok = cave.add_sand(&(500, 0));
                 progress = Progress::Falling;
             }
             _ => (),
@@ -256,8 +265,15 @@ mod tests {
 
     #[test]
     fn part1() {
-        let res = get_num_sand_rest(TEST_INPUT.lines().map(|l| l.to_string()), false);
+        let res = get_num_sand_rest(TEST_INPUT.lines().map(|l| l.to_string()), false, false);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 24);
+    }
+
+    #[test]
+    fn part2() {
+        let res = get_num_sand_rest(TEST_INPUT.lines().map(|l| l.to_string()), true, false);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 93);
     }
 }
