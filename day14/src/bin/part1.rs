@@ -7,7 +7,7 @@ use anyhow::Result;
 fn main() -> Result<()> {
     let stdin = io::stdin();
 
-    let res = get_num_sand_rest(stdin.lock().lines().filter_map(|s| s.ok()));
+    let res = get_num_sand_rest(stdin.lock().lines().filter_map(|s| s.ok()), false);
 
     println!("{}", res.unwrap());
 

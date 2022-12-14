@@ -1,7 +1,8 @@
 #![feature(try_blocks)]
 #![feature(iter_intersperse)]
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
+use std::{thread, time};
 
 use anyhow::{anyhow, Result};
 use nom::{
@@ -15,6 +16,7 @@ use nom::{
 };
 use util::{parse_nice, Span};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Space {
     Air,
     Rock,
@@ -30,12 +32,45 @@ impl Space {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Cave {
-    space: HashMap<(i32, i32), Space>,
+    contents: HashMap<(i32, i32), Space>,
     moving: Option<(i32, i32)>,
     bottom: i32,
 }
 
+impl fmt::Display for Cave {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (x_start, x_end, y_start, y_end) = self
+            .contents
+            .keys()
+            .fold(None, |range: Option<(i32, i32, i32, i32)>, &(x, y)| {
+                if let Some((x_start, x_end, y_start, y_end)) = range {
+                    Some((x_start.min(x), x_end.max(x), y_start.min(y), y_end.max(y)))
+                } else {
+                    Some((x, x, y, y))
+                }
+            })
+            .unwrap();
+
+        for y in y_start..=y_end {
+            for x in x_start..=x_end {
+                let c = match self.get(&(x, y)) {
+                    Space::Air => "  ",
+                    Space::Rock => "██",
+                    Space::Sand => "::",
+                };
+
+                write!(f, "{c}")?
+            }
+            write!(f, "\n")?
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
     Falling,
     EndFall,
@@ -43,8 +78,12 @@ pub enum Progress {
 }
 
 impl Cave {
+    fn get(&self, loc: &(i32, i32)) -> Space {
+        self.contents.get(loc).copied().unwrap_or(Space::Air)
+    }
+
     fn from_lines(lines: &[Line]) -> Self {
-        let mut space = HashMap::new();
+        let mut contents = HashMap::new();
         let mut bottom = None;
 
         for line in lines {
@@ -52,34 +91,37 @@ impl Cave {
                 let (x1, y1) = window[0];
                 let (x2, y2) = window[1];
 
-                if let Some(bottom) = bottom {
-                    bottom = y1.min(bottom);
-                    bottom = y2.min(bottom);
+                if let Some(ref mut bottom) = bottom {
+                    *bottom = y1.max(*bottom);
+                    *bottom = y2.max(*bottom);
+                } else {
+                    bottom = Some(y1.max(y2))
                 }
 
                 if x1 == x2 {
-                    for y in y1..=y2 {
-                        *space.get_mut(&(x1, y)).unwrap() = Space::Rock;
+                    for y in (y1..=y2).chain(y2..=y1) {
+                        contents.insert((x1, y), Space::Rock);
                     }
                 } else if y1 == y2 {
-                    for x in x1..=x2 {
-                        *space.get_mut(&(x, y1)).unwrap() = Space::Rock;
+                    for x in (x1..=x2).chain(x2..=x1) {
+                        contents.insert((x, y1), Space::Rock);
                     }
                 }
             }
         }
 
         Self {
-            space,
+            contents,
             moving: None,
             bottom: bottom.unwrap(),
         }
     }
+
     fn add_sand(&mut self, loc: &(i32, i32)) -> Option<()> {
-        let space = self.space.get_mut(loc)?;
-        match &space {
-            &Space::Air => {
-                *space = Space::Sand;
+        let space = self.get(loc);
+        match space {
+            Space::Air => {
+                self.contents.insert(*(loc), Space::Sand);
                 self.moving = Some(*loc);
                 Some(())
             }
@@ -89,32 +131,42 @@ impl Cave {
 
     fn progress(&mut self) -> Progress {
         let falling = if let Some((x, y)) = &self.moving {
-            let space_down = self.space.get_mut(&(*x, y - 1)).unwrap();
-            let moved = if space_down.is_filled() {
-                if !self.space[&(x - 1, y - 1)].is_filled() {
-                    *self.space.get_mut(&(x - 1, y - 1)).unwrap() = Space::Rock;
-                    true
-                } else if !self.space[&(x + 1, y - 1)].is_filled() {
-                    *self.space.get_mut(&(x + 1, y - 1)).unwrap() = Space::Rock;
-                    true
+            let down = (*x, y + 1);
+            let move_to = if self.get(&down).is_filled() {
+                let down_left = (x - 1, y + 1);
+                let down_right = (x + 1, y + 1);
+                if !self.get(&down_left).is_filled() {
+                    Some(down_left)
+                } else if !self.get(&down_right).is_filled() {
+                    Some(down_right)
                 } else {
-                    false
+                    None
                 }
             } else {
-                *space_down = Space::Rock;
-                true
+                Some(down)
             };
 
-            if moved {
-                *self.space.get_mut(&(*x, *y)).unwrap() = Space::Air;
+            if let Some(move_to) = move_to {
+                self.contents.remove(&(*x, *y));
+                self.contents.insert(move_to, Space::Sand);
+                self.moving = Some(move_to)
             }
 
-            moved
+            move_to
         } else {
-            false
-        }
+            None
+        };
 
-        if 
+        if let Some(falled_to) = falling {
+            if falled_to.1 >= self.bottom {
+                Progress::FallVoid
+            } else {
+                Progress::Falling
+            }
+        } else {
+            self.moving = None;
+            Progress::EndFall
+        }
     }
 }
 
@@ -155,12 +207,45 @@ fn get_lines(input: impl Iterator<Item = String>) -> Result<impl Iterator<Item =
         .into_iter())
 }
 
-pub fn get_num_sand_rest(input: impl Iterator<Item = String>) -> Result<usize> {
+pub fn get_num_sand_rest(input: impl Iterator<Item = String>, print: bool) -> Result<usize> {
     let lines = get_lines(input)?.collect::<Vec<_>>();
-    let cave = Cave::from_lines(lines.as_slice());
-    let mut 
-    println!("{x:#?}");
-    Ok(0)
+    let mut cave = Cave::from_lines(lines.as_slice());
+    let mut progress = Progress::Falling;
+    let mut rested = 0;
+
+    cave.add_sand(&(500, 0))
+        .ok_or(anyhow!("Couldn't add sand!"))?;
+    while progress != Progress::FallVoid {
+        if print {
+            let x = format!("{cave}");
+            println!(
+                "{}",
+                x.lines()
+                    .map(|l| l.chars().skip(0).take(160).collect::<String>())
+                    .take(40)
+                    .intersperse("\n".to_string())
+                    .collect::<String>()
+            );
+            let dt = time::Duration::from_millis(50);
+
+            thread::sleep(dt);
+            std::process::Command::new("clear").status().unwrap();
+        }
+
+        match progress {
+            Progress::Falling => {
+                progress = cave.progress();
+            }
+            Progress::EndFall => {
+                rested += 1;
+                cave.add_sand(&(500, 0))
+                    .ok_or(anyhow!("Couldn't add sand!"))?;
+                progress = Progress::Falling;
+            }
+            _ => (),
+        }
+    }
+    Ok(rested)
 }
 
 #[cfg(test)]
@@ -171,7 +256,7 @@ mod tests {
 
     #[test]
     fn part1() {
-        let res = get_num_sand_rest(TEST_INPUT.lines().map(|l| l.to_string()));
+        let res = get_num_sand_rest(TEST_INPUT.lines().map(|l| l.to_string()), false);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 24);
     }
