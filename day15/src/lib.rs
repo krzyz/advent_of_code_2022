@@ -86,18 +86,18 @@ fn get_sensor_ranges(sensors: &[Sensor], y: i32) -> Vec<Option<(i32, i32)>> {
 pub fn get_num_ruled_out(input: impl Iterator<Item = String>) -> Result<usize> {
     let sensors = get_sensors(input)?;
     let ranges = get_sensor_ranges(sensors.as_slice(), 10);
-    let x = ranges
+    let sensors_y = sensors
         .iter()
-        .filter_map(|&x| x)
-        .flat_map(|(s, e)| (s..e).collect::<Vec<_>>())
+        .filter_map(|Sensor { closest_beacon, .. }| {
+            (closest_beacon.1 == 10).then(|| closest_beacon.0)
+        })
         .collect::<HashSet<_>>();
-
-    println!("{x:#?}");
 
     Ok(ranges
         .iter()
         .filter_map(|&x| x)
         .flat_map(|(s, e)| (s..=e).collect::<Vec<_>>())
+        .filter(|x| !sensors_y.contains(x))
         .collect::<HashSet<_>>()
         .len())
 }
