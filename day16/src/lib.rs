@@ -31,9 +31,10 @@ struct Valve {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Path {
-    time_left: i32,
-    current: usize,
+    times_left: Vec<i32>,
+    currents: Vec<usize>,
     valves_left: Vec<usize>,
+    histories: Vec<Vec<(i32, usize)>>,
     pressure_built: i32,
     min: i32,
     max: i32,
@@ -144,77 +145,137 @@ impl ValveGraph {
             .collect::<Vec<_>>()
     }
 
-    fn max1(&self, time_left: i32, valves_left: &[usize]) -> i32 {
+    fn max1(&self, times_left: &[i32], valves_left: &[usize]) -> i32 {
         let mut rates_left = valves_left
             .iter()
             .map(|i| self.rates[*i])
             .collect::<Vec<_>>();
 
+        let times_left_iter = times_left
+            .iter()
+            .flat_map(|&t| (0..).map(move |i| t - 2 * i).take_while(|&t| t > 0))
+            .sorted()
+            .rev();
+
         rates_left.sort();
         rates_left
             .into_iter()
             .rev()
-            .enumerate()
-            .map(|(i, rate)| (time_left - 2 * i as i32, rate))
-            //.inspect(|(i, rate)| println!("in max1: {:#?}", (i, rate)))
-            .filter_map(|(t_l, rate)| (t_l > 0).then(|| t_l * rate as i32))
+            .zip(times_left_iter)
+            .filter_map(|(rate, t_l)| (t_l > 0).then(|| t_l * rate as i32))
             .sum()
     }
 
-    fn max2(&self, time_left: i32, current: usize, valves_left: &Vec<usize>) -> i32 {
+    fn max2(
+        &self,
+        times_left: &[i32],
+        currents: &[usize],
+        valves_left: &[usize],
+        level: i32,
+    ) -> i32 {
         valves_left
             .iter()
-            .map(|&other| {
-                let (path_length, next_valves_left, rate) =
-                    self.get_next(current, other, valves_left);
-                (time_left - path_length - 1).max(0) * rate
-                    + self.max1(
-                        (time_left - path_length - 1).max(0),
-                        next_valves_left.as_slice(),
+            .flat_map(|&other| {
+                self.get_many_next(times_left, currents, other, valves_left, None)
+                    .map(
+                        |(pressure, new_times_left, new_currents, next_valves_left, _)| {
+                            if level > 0 {
+                                pressure
+                                    + self.max2(
+                                        new_times_left.as_slice(),
+                                        new_currents.as_slice(),
+                                        next_valves_left.as_slice(),
+                                        level - 1,
+                                    )
+                            } else {
+                                pressure
+                                    + self.max1(
+                                        new_times_left.as_slice(),
+                                        next_valves_left.as_slice(),
+                                    )
+                            }
+                        },
                     )
             })
-            //.inspect(|max| println!("in max2: {max}"))
             .max()
             .unwrap_or(0)
     }
 
-    fn min(&self, time_left: i32, current: usize, valves_left: &Vec<usize>) -> i32 {
-        if time_left == 0 || valves_left.is_empty() {
+    fn min(&self, times_left: &[i32], currents: &[usize], valves_left: &[usize]) -> i32 {
+        if times_left.iter().all(|&t| t == 0) || valves_left.is_empty() {
             return 0;
         }
 
-        let (pressure_built, time_left, next, next_valves_left) = valves_left
+        let (pressure_built, times_left, next, next_valves_left, _) = valves_left
             .iter()
-            .map(|&other| {
-                let (path_length, next_valves_left, rate) =
-                    self.get_next(current, other, valves_left);
-                let next_time_left = (time_left - path_length - 1).max(0);
-                (
-                    rate * next_time_left,
-                    next_time_left,
-                    other,
-                    next_valves_left,
-                )
-            })
+            .flat_map(|&other| self.get_many_next(times_left, currents, other, valves_left, None))
             .sorted_by(|l, r| (r.0).cmp(&l.0))
             .next()
             .unwrap();
 
-        pressure_built + self.min(time_left, next, &next_valves_left)
+        pressure_built + self.min(times_left.as_slice(), next.as_slice(), &next_valves_left)
+    }
+
+    fn get_many_next<'a>(
+        &'a self,
+        times_left: &'a [i32],
+        currents: &'a [usize],
+        other: usize,
+        valves_left: &'a [usize],
+        histories: Option<&'a [Vec<(i32, usize)>]>,
+    ) -> impl Iterator<
+        Item = (
+            i32,
+            Vec<i32>,
+            Vec<usize>,
+            Vec<usize>,
+            Option<Vec<Vec<(i32, usize)>>>,
+        ),
+    > + 'a {
+        currents
+            .iter()
+            .zip(times_left.iter())
+            .enumerate()
+            .filter(|(_, (_, time_left))| **time_left != 0)
+            .unique()
+            .map(move |(i, (current, time_left))| {
+                let (path_length, next_valves_left, rate) =
+                    self.get_next(*current, other, valves_left);
+                let next_time_left = (time_left - path_length - 1).max(0);
+                let mut new_currents = currents.to_vec();
+                *new_currents.get_mut(i).unwrap() = other;
+                let mut new_times_left = times_left.to_vec();
+                *new_times_left.get_mut(i).unwrap() = next_time_left;
+                let new_histories = histories.map(|histories| {
+                    let mut new_histories = histories.to_vec();
+                    new_histories
+                        .get_mut(i)
+                        .unwrap()
+                        .push((next_time_left, other));
+                    new_histories
+                });
+                (
+                    rate * next_time_left,
+                    new_times_left,
+                    new_currents,
+                    next_valves_left,
+                    new_histories,
+                )
+            })
     }
 
     fn get_next(
         &self,
         current: usize,
         other: usize,
-        valves_left: &Vec<usize>,
+        valves_left: &[usize],
     ) -> (i32, Vec<usize>, i32) {
         let path_length = *self
             .shortest_paths
             .get(current)
             .and_then(|paths| paths.get(&other))
             .unwrap() as i32;
-        let mut next_valves_left = valves_left.clone();
+        let mut next_valves_left = valves_left.to_vec();
         next_valves_left.retain(|&x| x != other);
 
         (path_length, next_valves_left, self.rates[other] as i32)
@@ -222,29 +283,55 @@ impl ValveGraph {
 
     fn make_path(
         &self,
-        time_left: i32,
-        current: usize,
-        valves_left: &Vec<usize>,
+        times_left: Vec<i32>,
+        currents: Vec<usize>,
+        mut histories: Vec<Vec<(i32, usize)>>,
+        valves_left: Vec<usize>,
         pressure_built: i32,
     ) -> Path {
+        if histories.len() == 0 {
+            histories = times_left
+                .iter()
+                .zip(currents.iter())
+                .map(|(t, c)| vec![(*t, *c)])
+                .collect::<Vec<_>>();
+        }
+
+        let min = pressure_built
+            + self.min(
+                times_left.as_slice(),
+                currents.as_slice(),
+                valves_left.as_slice(),
+            );
+        let max = pressure_built
+            + self.max2(
+                times_left.as_slice(),
+                currents.as_slice(),
+                valves_left.as_slice(),
+                0,
+            );
         Path {
-            time_left,
-            current,
-            valves_left: valves_left.clone(),
+            times_left,
+            currents,
+            valves_left,
+            histories,
             pressure_built,
-            min: pressure_built + self.min(time_left, current, valves_left),
-            max: pressure_built + self.max2(time_left, current, valves_left),
+            min,
+            max,
         }
     }
 
-    fn get_max_pressure(&self) -> i32 {
+    fn get_max_pressure(&self, num_agents: usize, time: i32) -> i32 {
         let mut paths = std::iter::once(State::Progressing(self.make_path(
-            30,
-            self.starting,
-            &self.get_interesting_valves(),
+            vec![time; num_agents],
+            vec![self.starting, self.starting],
+            vec![],
+            self.get_interesting_valves(),
             0,
         )))
         .collect::<BTreeSet<_>>();
+
+        let mut i = 0;
 
         while paths
             .iter()
@@ -252,10 +339,7 @@ impl ValveGraph {
             .next()
             .is_some()
         {
-            //println!("Paths: {paths:#?}");
             let min = paths.iter().rev().next().unwrap().path().min;
-            //println!("Best min : {min}");
-
             paths.retain(|state| state.path().max >= min);
 
             if let Some(next_considered) = paths
@@ -267,38 +351,45 @@ impl ValveGraph {
             {
                 paths.retain(|path| path != &next_considered);
 
-                //println!("Next considered is: {next_considered:#?}");
-
                 let Path {
-                    time_left,
-                    current,
+                    times_left,
+                    currents,
                     valves_left,
                     pressure_built,
+                    histories,
                     ..
                 } = next_considered.path();
                 for &other in valves_left.iter() {
-                    //println!("Now other is {other}");
-                    let (path_length, next_valves_left, rate) =
-                        self.get_next(*current, other, valves_left);
-                    let next_time_left = (time_left - path_length - 1).max(0);
-                    let path = self.make_path(
-                        next_time_left,
-                        other,
-                        &next_valves_left,
-                        pressure_built + next_time_left * rate,
-                    );
-                    if next_valves_left.len() == 0 {
-                        //println!("Inserting finished: {path:#?}");
-                        paths.insert(State::Finished(path))
-                    } else if next_time_left > 0 {
-                        //println!("Inserting progressing: {path:#?}");
-                        paths.insert(State::Progressing(path))
-                    } else {
-                        //println!("Inserting finished: {path:#?}");
-                        paths.insert(State::Finished(path))
-                    };
+                    for (pressure, new_times_left, new_currents, next_valves_left, new_histories) in
+                        self.get_many_next(
+                            times_left,
+                            currents,
+                            other,
+                            valves_left,
+                            Some(histories.as_slice()),
+                        )
+                    {
+                        let next_valves_len = next_valves_left.len();
+                        let any_times_left = new_times_left.iter().any(|&t| t > 0);
+
+                        let path = self.make_path(
+                            new_times_left,
+                            new_currents,
+                            new_histories.unwrap(),
+                            next_valves_left,
+                            pressure_built + pressure,
+                        );
+                        if next_valves_len == 0 {
+                            paths.insert(State::Finished(path))
+                        } else if any_times_left {
+                            paths.insert(State::Progressing(path))
+                        } else {
+                            paths.insert(State::Finished(path))
+                        };
+                    }
                 }
             }
+            i += 1;
         }
 
         paths.iter().rev().next().unwrap().path().pressure_built
@@ -408,10 +499,14 @@ pub fn get_max_pressure(input: impl Iterator<Item = String>) -> Result<i32> {
     ))
 }
 
-pub fn get_max_pressure_2(input: impl Iterator<Item = String>) -> Result<i32> {
+pub fn get_max_pressure_2(
+    input: impl Iterator<Item = String>,
+    num_agents: usize,
+    time: i32,
+) -> Result<i32> {
     let valves = parse_valves(input)?;
     let valve_graph = ValveGraph::new(valves)?;
-    Ok(valve_graph.get_max_pressure())
+    Ok(valve_graph.get_max_pressure(num_agents, time))
 }
 
 #[cfg(test)]
@@ -421,16 +516,23 @@ mod tests {
     const TEST_INPUT: &str = include_str!("../data/test_input");
 
     #[test]
-    fn part1() {
+    fn part1old() {
         let res = get_max_pressure(TEST_INPUT.lines().map(|l| l.to_string()));
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 1651);
     }
 
     #[test]
-    fn part2() {
-        let res = get_max_pressure_2(TEST_INPUT.lines().map(|l| l.to_string()));
+    fn part1() {
+        let res = get_max_pressure_2(TEST_INPUT.lines().map(|l| l.to_string()), 1, 30);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 1651);
+    }
+
+    #[test]
+    fn part2() {
+        let res = get_max_pressure_2(TEST_INPUT.lines().map(|l| l.to_string()), 2, 26);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 1707);
     }
 }

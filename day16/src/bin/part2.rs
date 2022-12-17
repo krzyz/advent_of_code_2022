@@ -7,7 +7,7 @@ use anyhow::Result;
 fn main() -> Result<()> {
     let stdin = io::stdin();
 
-    let res = get_max_pressure_2(stdin.lock().lines().filter_map(|s| s.ok()), 1, 30);
+    let res = get_max_pressure_2(stdin.lock().lines().filter_map(|s| s.ok()), 2, 26);
 
     println!("{}", res.unwrap());
 
