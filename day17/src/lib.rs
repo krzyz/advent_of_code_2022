@@ -1,7 +1,11 @@
-#![feature(try_blocks)]
-#![feature(iter_intersperse)]
+#![feature(int_roundings)]
 
-use std::fmt;
+use std::{
+    array::IntoIter,
+    collections::HashMap,
+    fmt,
+    iter::{Cycle, Enumerate, Peekable},
+};
 
 use anyhow::{anyhow, Result};
 use static_init::{dynamic, LazyAccess};
@@ -56,7 +60,20 @@ impl Rock {
             LazyAccess::get(&ROCK5),
         ]
         .into_iter()
-        .cycle()
+    }
+
+    fn falling_rocks_iter_cycle() -> Cycle<Enumerate<IntoIter<&'static Rock, 5>>> {
+        let x = [
+            LazyAccess::get(&ROCK1),
+            LazyAccess::get(&ROCK2),
+            LazyAccess::get(&ROCK3),
+            LazyAccess::get(&ROCK4),
+            LazyAccess::get(&ROCK5),
+        ]
+        .into_iter()
+        .enumerate()
+        .cycle();
+        x
     }
 
     fn len(&self) -> usize {
@@ -66,6 +83,7 @@ impl Rock {
 
 struct Chamber {
     occupied: Vec<Vec<bool>>,
+    unseen_height: i64,
 }
 
 impl fmt::Display for Chamber {
@@ -108,7 +126,6 @@ impl Chamber {
                     })?
                 })
             })
-            .map(|x| x)
             .next()
             .is_some()
     }
@@ -132,20 +149,29 @@ impl TryFrom<char> for JetDirection {
     }
 }
 
+struct CycleDescription {
+    rocks_in_between: i64,
+    height_in_between: i64,
+}
+
 struct FallSimulation {
     chamber: Chamber,
-    rocks_fallen: u32,
-    max_rocks: u32,
-    rock_iterator: Box<dyn Iterator<Item = &'static Rock>>,
-    jet_iterator: Box<dyn Iterator<Item = JetDirection>>,
+    rocks_fallen: i64,
+    max_rocks: i64,
+    rock_iterator: Peekable<Cycle<Enumerate<IntoIter<&'static Rock, 5>>>>,
+    jet_iterator: Peekable<Cycle<Enumerate<std::vec::IntoIter<JetDirection>>>>,
+    known_tops: HashMap<(usize, usize, Vec<Vec<bool>>), (i64, i64)>,
 }
 
 impl FallSimulation {
-    fn new(max_rocks: u32, jet_directions: Vec<JetDirection>) -> FallSimulation {
-        let chamber = Chamber { occupied: vec![] };
+    fn new(max_rocks: i64, jet_directions: Vec<JetDirection>) -> FallSimulation {
+        let chamber = Chamber {
+            occupied: vec![],
+            unseen_height: 0,
+        };
         let rocks_fallen = 0;
-        let rock_iterator = Box::new(Rock::falling_rocks_iter());
-        let jet_iterator = Box::new(jet_directions.into_iter().cycle());
+        let rock_iterator = Rock::falling_rocks_iter_cycle().peekable();
+        let jet_iterator = jet_directions.into_iter().enumerate().cycle().peekable();
 
         FallSimulation {
             chamber,
@@ -153,11 +179,15 @@ impl FallSimulation {
             max_rocks,
             rock_iterator,
             jet_iterator,
+            known_tops: HashMap::new(),
         }
     }
 
-    fn add_fallen(&mut self, rock_state: RockState) {
+    // returns some if it's a cycle
+    fn add_fallen(&mut self, rock_state: RockState) -> Option<CycleDescription> {
         self.rocks_fallen += 1;
+
+        let mut modified = vec![];
 
         for (i, row) in rock_state.rock.occupied.iter().enumerate() {
             let y = i as i32 + rock_state.pos.1;
@@ -168,6 +198,8 @@ impl FallSimulation {
                     let i_index: usize =
                         (self.chamber.occupied.len() as i32 + y).try_into().unwrap();
                     let j_index: usize = x.try_into().unwrap();
+
+                    modified.push(j_index);
 
                     *self
                         .chamber
@@ -191,12 +223,64 @@ impl FallSimulation {
                 self.chamber.occupied.push(new_row);
             }
         }
+
+        if self.chamber.occupied.len() > 1000 && !modified.is_empty() {
+            if !(Rock::falling_rocks_iter()
+                .flat_map(|rock| {
+                    (0..=(7 - rock.len()))
+                        .filter_map(|x| {
+                            let hypothetical_rock_state = RockState {
+                                pos: (x as i32, -(rock.occupied.len() as i32)),
+                                rock: rock,
+                            };
+                            (!self.chamber.is_colliding(&hypothetical_rock_state)).then_some(())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .next()
+                .is_some())
+            {
+                let new_occupied = self
+                    .chamber
+                    .occupied
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                let i_jet = self.jet_iterator.peek().unwrap().0;
+                let i_rock = self.rock_iterator.peek().unwrap().0;
+
+                self.chamber.unseen_height += self.chamber.occupied.len() as i64 - 2;
+                self.chamber.occupied = new_occupied.clone();
+
+                let height_now = self.chamber.unseen_height + self.chamber.occupied.len() as i64;
+
+                if let Some((old_rocks, old_height)) = self.known_tops.insert(
+                    (i_jet, i_rock, new_occupied),
+                    (self.rocks_fallen, height_now),
+                ) {
+                    Some(CycleDescription {
+                        rocks_in_between: self.rocks_fallen - old_rocks,
+                        height_in_between: height_now - old_height,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     fn progress(&mut self, state: State) -> State {
         match state {
             State::Blowing(state) => match self.jet_iterator.next() {
-                Some(direction) => {
+                Some((_, direction)) => {
                     let new_state = match direction {
                         JetDirection::Left => state.moved((-1, 0)).unwrap_or(state),
                         JetDirection::Right => state.moved((1, 0)).unwrap_or(state),
@@ -212,7 +296,16 @@ impl FallSimulation {
             State::Falling(state) => {
                 let new_state = state.moved((0, -1)).unwrap();
                 if self.chamber.is_colliding(&new_state) {
-                    self.add_fallen(state);
+                    if let Some(CycleDescription {
+                        rocks_in_between,
+                        height_in_between,
+                    }) = self.add_fallen(state)
+                    {
+                        let i_cycles =
+                            (self.max_rocks - self.rocks_fallen).div_floor(rocks_in_between);
+                        self.rocks_fallen += i_cycles * rocks_in_between;
+                        self.chamber.unseen_height += i_cycles * height_in_between;
+                    }
                     State::NewRock
                 } else {
                     State::Blowing(new_state)
@@ -224,7 +317,7 @@ impl FallSimulation {
                 } else {
                     State::Blowing(RockState {
                         pos: (2, 3),
-                        rock: self.rock_iterator.next().unwrap(),
+                        rock: self.rock_iterator.next().unwrap().1,
                     })
                 }
             }
@@ -260,7 +353,7 @@ enum State {
     End,
 }
 
-pub fn get_tower_height(mut input: impl Iterator<Item = String>, num_rocks: u32) -> Result<usize> {
+pub fn get_tower_height(mut input: impl Iterator<Item = String>, num_rocks: i64) -> Result<i64> {
     let jet_directions = input
         .next()
         .ok_or(anyhow!["Missing jet directions input!"])?
@@ -273,13 +366,9 @@ pub fn get_tower_height(mut input: impl Iterator<Item = String>, num_rocks: u32)
     let mut state = State::NewRock;
     while state != State::End {
         state = fall_simulation.progress(state);
-        //if state == State::NewRock {
-        //    println!("=================================");
-        //    println!("{}", fall_simulation.chamber);
-        //}
     }
 
-    Ok(fall_simulation.chamber.occupied.len())
+    Ok(fall_simulation.chamber.occupied.len() as i64 + fall_simulation.chamber.unseen_height)
 }
 
 #[cfg(test)]
@@ -294,4 +383,11 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 3068);
     }
+
+    //#[test]
+    //fn part2() {
+    //    let res = get_tower_height(TEST_INPUT.lines().map(|l| l.to_string()), 1000000000000);
+    //    assert!(res.is_ok());
+    //    assert_eq!(res.unwrap(), 1514285714288);
+    //}
 }
