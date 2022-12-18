@@ -51,17 +51,6 @@ struct Rock {
 }
 
 impl Rock {
-    fn falling_rocks_iter() -> impl Iterator<Item = &'static Rock> {
-        [
-            LazyAccess::get(&ROCK1),
-            LazyAccess::get(&ROCK2),
-            LazyAccess::get(&ROCK3),
-            LazyAccess::get(&ROCK4),
-            LazyAccess::get(&ROCK5),
-        ]
-        .into_iter()
-    }
-
     fn falling_rocks_iter_cycle() -> Cycle<Enumerate<IntoIter<&'static Rock, 5>>> {
         let x = [
             LazyAccess::get(&ROCK1),
@@ -160,7 +149,7 @@ struct FallSimulation {
     max_rocks: i64,
     rock_iterator: Peekable<Cycle<Enumerate<IntoIter<&'static Rock, 5>>>>,
     jet_iterator: Peekable<Cycle<Enumerate<std::vec::IntoIter<JetDirection>>>>,
-    known_tops: HashMap<(usize, usize, Vec<Vec<bool>>), (i64, i64)>,
+    tops: HashMap<(usize, usize, Vec<Vec<bool>>), (i64, i64)>,
 }
 
 impl FallSimulation {
@@ -179,7 +168,7 @@ impl FallSimulation {
             max_rocks,
             rock_iterator,
             jet_iterator,
-            known_tops: HashMap::new(),
+            tops: HashMap::new(),
         }
     }
 
@@ -224,54 +213,29 @@ impl FallSimulation {
             }
         }
 
-        if self.chamber.occupied.len() > 1000 && !modified.is_empty() {
-            if !(Rock::falling_rocks_iter()
-                .flat_map(|rock| {
-                    (0..=(7 - rock.len()))
-                        .filter_map(|x| {
-                            let hypothetical_rock_state = RockState {
-                                pos: (x as i32, -(rock.occupied.len() as i32)),
-                                rock: rock,
-                            };
-                            (!self.chamber.is_colliding(&hypothetical_rock_state)).then_some(())
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .next()
-                .is_some())
-            {
-                let new_occupied = self
-                    .chamber
-                    .occupied
-                    .iter()
-                    .rev()
-                    .take(2)
-                    .rev()
-                    .cloned()
-                    .collect::<Vec<_>>();
+        let i_jet = self.jet_iterator.peek().unwrap().0;
+        let i_rock = self.rock_iterator.peek().unwrap().0;
 
-                let i_jet = self.jet_iterator.peek().unwrap().0;
-                let i_rock = self.rock_iterator.peek().unwrap().0;
+        let last_four = self
+            .chamber
+            .occupied
+            .iter()
+            .rev()
+            .take(8)
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>();
 
-                self.chamber.unseen_height += self.chamber.occupied.len() as i64 - 2;
-                self.chamber.occupied = new_occupied.clone();
+        let height_now = self.chamber.unseen_height + self.chamber.occupied.len() as i64;
 
-                let height_now = self.chamber.unseen_height + self.chamber.occupied.len() as i64;
-
-                if let Some((old_rocks, old_height)) = self.known_tops.insert(
-                    (i_jet, i_rock, new_occupied),
-                    (self.rocks_fallen, height_now),
-                ) {
-                    Some(CycleDescription {
-                        rocks_in_between: self.rocks_fallen - old_rocks,
-                        height_in_between: height_now - old_height,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        if let Some((old_rocks, old_height)) = self
+            .tops
+            .insert((i_jet, i_rock, last_four), (self.rocks_fallen, height_now))
+        {
+            Some(CycleDescription {
+                rocks_in_between: self.rocks_fallen - old_rocks,
+                height_in_between: height_now - old_height,
+            })
         } else {
             None
         }
@@ -384,10 +348,10 @@ mod tests {
         assert_eq!(res.unwrap(), 3068);
     }
 
-    //#[test]
-    //fn part2() {
-    //    let res = get_tower_height(TEST_INPUT.lines().map(|l| l.to_string()), 1000000000000);
-    //    assert!(res.is_ok());
-    //    assert_eq!(res.unwrap(), 1514285714288);
-    //}
+    #[test]
+    fn part2() {
+        let res = get_tower_height(TEST_INPUT.lines().map(|l| l.to_string()), 1000000000000);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 1514285714288);
+    }
 }
