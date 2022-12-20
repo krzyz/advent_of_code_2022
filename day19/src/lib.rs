@@ -10,7 +10,6 @@ use itertools::Itertools;
 use nom::character::complete::{alpha1, multispace1};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, pair, preceded, separated_pair};
-use nom::Or;
 use nom::{
     bytes::complete::tag,
     combinator::{map, map_res},
@@ -145,7 +144,7 @@ impl State {
             .map(|(cost_m, cost)| -> Option<f32> {
                 let income = self.incomes[*cost_m as usize];
                 (income > 0).then(|| {
-                    (*cost as f32 - self.materials[*cost_m as usize] as f32)
+                    -(*cost as f32 - self.materials[*cost_m as usize] as f32).max(0.0)
                         / self.incomes[*cost_m as usize] as f32
                 })
             })
@@ -168,77 +167,103 @@ impl State {
         }
     }
 
-    fn get_best_next(&self, blueprint: &Blueprint) -> Vec<State> {
-        let available = MATERIALS
-            .iter()
-            .filter(|m| {
-                blueprint.costs[m]
-                    .iter()
-                    .all(|(cost_m, cost)| cost <= &self.materials[*cost_m as usize])
-            })
-            .map(|m| Some(m))
-            .chain(std::iter::once(None))
-            .collect::<BTreeSet<_>>();
-
-        let new_state = self.clone().progress();
-
-        let mut sorted_by_turns_to_best = available
-            .iter()
-            .map(|&m_to_build| {
-                let new_state_considered = if let Some(m_to_build) = m_to_build {
-                    new_state.clone().build_robot(blueprint, *m_to_build)
-                } else {
-                    new_state.clone()
-                };
-
-                (
-                    new_state_considered,
-                    MATERIALS
-                        .iter()
-                        .rev()
-                        .map(|m| new_state.turns_to(blueprint, *m))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
-            .collect::<Vec<_>>();
-
-        //println!("Sorted by turns: {sorted_by_turns_to_best:#?}");
-
-        let desirables = available
+    fn get_best_next(states: Vec<State>, blueprint: &Blueprint) -> State {
+        //println!("\n\n\nstart inspect\n\n\n");
+        let mut sorted_by_turns = states
             .into_iter()
-            .rev()
-            .filter_map(|m| {
-                if let Some(m) = m {
-                    self.is_build_desirable(blueprint, m).then_some(Some(m))
+            .flat_map(|state| {
+                let available = MATERIALS
+                    .iter()
+                    .filter(|m| {
+                        blueprint.costs[m]
+                            .iter()
+                            .all(|(cost_m, cost)| cost <= &state.materials[*cost_m as usize])
+                    })
+                    .map(|m| Some(m))
+                    .chain(std::iter::once(None))
+                    .collect::<BTreeSet<_>>();
+
+                let new_state = state.progress();
+
+                available
+                    .iter()
+                    .map(move |&m_to_build| {
+                        let new_state_considered = if let Some(m_to_build) = m_to_build {
+                            new_state.clone().build_robot(blueprint, *m_to_build)
+                        } else {
+                            new_state.clone()
+                        };
+
+                        (
+                            new_state_considered,
+                            m_to_build,
+                            MATERIALS
+                                .iter()
+                                .rev()
+                                .map(|m| new_state.turns_to(blueprint, *m))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .sorted_by(|(s1, ma, a), (_, mb, b)| {
+                //println!("For minute {} Comparing {a:#?} with {b:#?}", s1.minute);
+                //println!("Result: {:#?}", a.partial_cmp(b));
+                if ma == &Some(&Material::Geode) {
+                    Ordering::Greater
+                } else if mb == &Some(&Material::Geode) {
+                    Ordering::Less
                 } else {
-                    Some(None)
+                    a.partial_cmp(b).unwrap_or(Ordering::Equal)
                 }
             })
+            .inspect(|(s, m, t)| println!("For state: {s:#?}, built: {m:#?}, turns: {t:#?}\n\n"))
             .collect::<Vec<_>>();
 
-        if sorted_by_turns_to_best.len() == 1
-            || (sorted_by_turns_to_best.len() > 1
-                && sorted_by_turns_to_best.last().unwrap().1
-                    > sorted_by_turns_to_best.iter().rev().next().unwrap().1)
-        {
-            //println!("Chosen by turns!");
-            vec![sorted_by_turns_to_best.pop().unwrap().0]
-        } else if desirables.len() > 0 {
-            //println!("Chosen by desirability!");
-            desirables
-                .into_iter()
-                .map(|m| {
-                    if let Some(m) = m {
-                        new_state.clone().build_robot(blueprint, *m)
-                    } else {
-                        new_state.clone()
-                    }
-                })
-                .collect()
+        //println!("\n\n\nEnd inspect\n\n\n\n\n\n");
+
+        let mut best_states_with_turns: Vec<(State, Option<&Material>, Vec<Option<f32>>)> = vec![];
+        while let Some((state, built_m, turns)) = sorted_by_turns.pop() {
+            if let Some((_, _, best_turns)) = best_states_with_turns.first() {
+                if best_turns == &turns && state.minute < 24 {
+                    best_states_with_turns.push((state, built_m, turns))
+                }
+            } else {
+                best_states_with_turns.push((state, built_m, turns))
+            }
+        }
+
+        let solved = if best_states_with_turns.len() == 1 {
+            true
         } else {
-            //println!("Left as it is!");
-            vec![new_state]
+            if let Some(build_material) = best_states_with_turns.first().unwrap().1 {
+                if build_material == &Material::Geode {
+                    true
+                } else {
+                    false
+                }
+            } else if let Some(turns_to_build_geode) = best_states_with_turns.first().unwrap().2[0]
+            {
+                if turns_to_build_geode > -1.0 {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if solved {
+            best_states_with_turns.pop().unwrap().0
+        } else {
+            State::get_best_next(
+                best_states_with_turns
+                    .into_iter()
+                    .map(|(state, _, _)| state)
+                    .collect::<Vec<_>>(),
+                blueprint,
+            )
         }
     }
 
@@ -332,43 +357,19 @@ fn parse_blueprints(input: &str) -> Result<BTreeMap<i32, Blueprint>> {
 fn get_blueprint_quality(blueprint: &Blueprint) -> u32 {
     let mut states = BTreeSet::from_iter([State::new()]);
     let mut max_geodes = 0;
-    let mut best_build_times = [(24, [0, 0, 0, 0]); 4];
 
     while !states.is_empty() {
-        println!("Num states: {}, max_geodes: {max_geodes}", states.len());
+        //println!("Num states: {}, max_geodes: {max_geodes}", states.len());
         let next_state = states.pop_last().unwrap();
 
-        let mut skip = false;
-        for mat in MATERIALS.iter() {
-            let (bbt, bbt_incomes) = best_build_times[*mat as usize];
-            let next_worse = ((*mat as usize)..Material::COUNT).all(|m| {
-                let mm: Material = num::FromPrimitive::from_usize(m).unwrap();
-                next_state.incomes[mm.next() as usize] >= bbt_incomes[mm.next() as usize]
-            });
-
-            if next_state.incomes[*mat as usize] > 0 {
-                if next_state.minute < bbt && next_worse {
-                    best_build_times[*mat as usize] = (next_state.minute, next_state.incomes);
-                }
-            } else if best_build_times[*mat as usize].0 <= next_state.minute && !next_worse {
-                skip = true;
-            }
-        }
-
-        if skip {
-            continue;
-        }
-
-        println!("{best_build_times:#?}");
-
         let geode_count = next_state.materials[Material::Geode as usize];
-        println!("count: {geode_count}");
-        //println!("Next state: {next_state:#?}, count: {geode_count}");
+        //println!("count: {geode_count}");
+        println!("Next state: {next_state:#?}, count: {geode_count}");
         if next_state.minute == 24 {
             max_geodes = max_geodes.max(geode_count);
         } else {
             //states.extend(next_state.get_next(blueprint))
-            states.extend(next_state.get_best_next(blueprint));
+            states.insert(State::get_best_next(vec![next_state], blueprint));
         }
     }
 
