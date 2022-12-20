@@ -1,5 +1,19 @@
+#![feature(iter_intersperse)]
+
+use std::{
+    io::{self, BufRead},
+    str::FromStr,
+};
+
+use anyhow::Result;
 use miette::GraphicalReportHandler;
-use nom::IResult;
+use nom::{
+    character::complete::{char, digit1},
+    combinator::{map_res, opt, recognize},
+    error::ParseError,
+    sequence::tuple,
+    IResult,
+};
 use nom_locate::LocatedSpan;
 use nom_supreme::{
     error::{BaseErrorKind, ErrorTree, GenericErrorTree},
@@ -20,6 +34,15 @@ struct BadInput<'a> {
     bad_bit: miette::SourceSpan,
 
     kind: BaseErrorKind<&'a str, Box<dyn std::error::Error + Send + Sync>>,
+}
+
+pub fn parse_number<'a, E>(i: Span<'a>) -> IResult<Span<'a>, i64, E>
+where
+    E: ParseError<Span<'a>> + nom::error::FromExternalError<Span<'a>, anyhow::Error>,
+{
+    map_res(recognize(tuple((opt(char('-')), digit1))), |i: Span<'a>| {
+        FromStr::from_str(i.fragment()).map_err(anyhow::Error::msg)
+    })(i)
 }
 
 pub fn parse_nice<'a, T, F>(l: &'a str, parse_fun: F) -> Option<T>
@@ -51,4 +74,15 @@ where
             None
         }
     }
+}
+
+pub fn read_input_as_string() -> Result<String> {
+    let stdin = io::stdin();
+
+    stdin
+        .lock()
+        .lines()
+        .intersperse_with(|| Ok("\n".to_string()))
+        .collect::<std::result::Result<String, _>>()
+        .map_err(anyhow::Error::msg)
 }
